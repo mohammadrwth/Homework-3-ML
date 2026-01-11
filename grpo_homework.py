@@ -367,27 +367,6 @@ def train_grpo(
     
     return rewards_list
 
-
-# ============================================================================
-# Part 5: Main Function
-# ============================================================================
-
-
-
-The issue is that your model (weights) plus the optimizer states (which are stored to update the model) are taking up more than 16GB, which is the limit of a single T4 GPU.
-*   **Model Weights:** ~3 GB
-*   **Optimizer States:** ~12 GB
-*   **Total:** ~15 GB+ (this leaves no room for the intermediate calculations/activations required for training).
-
-Since you are on **Kaggle T4X2** (which has 2 GPUs), the solution is to use **both GPUs**. By changing the code to `device_map="auto"`, the model will automatically split itself across the two cards, significantly reducing the memory load on each individual GPU.
-
-Here are the necessary changes:
-
-1.  **`device_map="auto"`**: This is the critical change. It enables **Model Parallelism**, splitting the model across your 2 T4 GPUs.
-2.  **`torch.cuda.empty_cache()`**: Added to clear memory between batches.
-
-Here is the updated `main()` function. You only need to replace the `main` function in your previous code with this one:
-
 # ============================================================================
 # Part 5: Main Function
 # ============================================================================
