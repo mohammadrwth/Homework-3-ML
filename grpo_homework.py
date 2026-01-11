@@ -34,9 +34,7 @@ class GSM8KDataset(Dataset):
     def __init__(self, split="train", tokenizer=None, max_length=512):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.data = load_dataset("gsm8k", "main", split=split)
-
-
+        self.data = load_dataset("./gsm8k", "main", split=split)
 
     def __len__(self):
         return len(self.data)
@@ -51,8 +49,7 @@ class GSM8KDataset(Dataset):
         answer_number = self.extract_answer(answer)
 
         # Format the prompt
-        prompt = f"Question: {question}\nAnswer: Let's solve this step by step.\nFinal answer: #### "
-
+        prompt = f"Question: {question}\nAnswer: Let's solve this step by step.\n"
 
         # ========================================================================
         # TODO 1: Tokenize the prompt
@@ -61,10 +58,13 @@ class GSM8KDataset(Dataset):
             prompt,
             return_tensors="pt",
             truncation=True,
+            padding="max_length",
             max_length=self.max_length,
         )
         input_ids = enc["input_ids"]
         attention_mask = enc["attention_mask"]
+
+
         # END TODO 1
         # ========================================================================
 
@@ -151,8 +151,10 @@ def compute_advantages_grpo(rewards, group_size=4):
     # TODO 2: Implement GRPO advantage computation
     # ========================================================================
     assert rewards.numel() % group_size == 0
-    group_rewards = rewards.view(-1, group_size)
-    advantages = (group_rewards - group_rewards.mean(dim=1, keepdim=True)).view(-1)
+    g = rewards.view(-1, group_size)
+    advantages = (g - g.mean(dim=1, keepdim=True)).view(-1)
+
+
     # END TODO 2
     # ========================================================================
 
@@ -176,12 +178,14 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
     # ========================================================================
-    diff = (logprobs - old_logprobs).clamp(-20, 20)
-    ratios = torch.exp(diff)
+    ratios = torch.exp((logprobs - old_logprobs).clamp(-20, 20))
     adv = advantages.unsqueeze(1)
-    unclipped = ratios * adv
-    clipped = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
-    loss = -(torch.min(unclipped, clipped) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+    surr1 = ratios * adv
+    surr2 = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
+    loss = -(torch.min(surr1, surr2) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+
+
+
 
     # END TODO 3
     # ========================================================================
@@ -195,27 +199,54 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
 
 def generate_completions(model, tokenizer, input_ids, attention_mask,
                         max_new_tokens=256, temperature=1.0, num_samples=4):
+    """
+    Generate multiple completions for each prompt.
+
+    Args:
+        model: The language model
+        tokenizer: The tokenizer
+        input_ids: Input token ids, shape (batch_size, seq_len)
+        attention_mask: Attention mask, shape (batch_size, seq_len)
+        max_new_tokens: Maximum number of new tokens to generate
+        temperature: Sampling temperature
+        num_samples: Number of samples per prompt
+
+    Returns:
+        all_outputs: Dictionary containing generated sequences and info
+    """
     model.eval()
+
+    # Repeat inputs for multiple samples
+    batch_size = input_ids.shape[0]
+    input_ids_repeated = input_ids.repeat_interleave(num_samples, dim=0)
+    attention_mask_repeated = attention_mask.repeat_interleave(num_samples, dim=0)
+
     with torch.no_grad():
         outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=input_ids_repeated,
+            attention_mask=attention_mask_repeated,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.7,
-            top_p=0.95,
-            top_k=50,
-            num_return_sequences=num_samples,
+            temperature=temperature,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
 
-
+    # Decode completions
     completions = []
-    prompt_len = input_ids.shape[1]
     for output in outputs:
-        completions.append(tokenizer.decode(output[prompt_len:], skip_special_tokens=True))
-    return {"output_ids": outputs, "completions": completions, "prompt_length": prompt_len}
+        # Get only the generated part (exclude prompt)
+        prompt_len = input_ids.shape[1]
+        generated_ids = output[prompt_len:]
+        completion = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        completions.append(completion)
+
+    return {
+        "output_ids": outputs,
+        "completions": completions,
+        "prompt_length": input_ids.shape[1],
+    }
+
 
 def compute_logprobs_from_model(model, input_ids, attention_mask):
     """
@@ -237,6 +268,7 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     logp = F.log_softmax(logits, dim=-1)
     tok = logp[:, :-1].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
     logprobs = F.pad(tok, (1, 0), value=0.0)
+
 
     # END TODO 4
     # ========================================================================
@@ -291,16 +323,17 @@ def train_grpo(
             # ====================================================================
             # TODO 5: Implement the GRPO training step
             # ====================================================================
-            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, num_samples=group_size)
+            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, temperature=0.7, num_samples=group_size)
             output_ids = gen["output_ids"]; full_attn = (output_ids != tokenizer.pad_token_id).long()
             gt = [a for a in answers for _ in range(group_size)]
             rewards = compute_reward(gen["completions"], gt).to(device); advantages = compute_advantages_grpo(rewards, group_size).to(device)
             loss_mask = full_attn.clone(); loss_mask[:, :gen["prompt_length"]] = 0
             with torch.no_grad(): old_logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
-            model.train(); logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
+            logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             loss = compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps)
             if not torch.isfinite(loss): optimizer.zero_grad(set_to_none=True); continue
-            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]["params"], 1.0); optimizer.step()
+            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step()
+
 
             # END TODO 5
             # ====================================================================
@@ -338,19 +371,11 @@ def main():
     model_path = sys.argv[1]
     print(model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        trust_remote_code=True,
-    ).to(device)
-    model.config.use_cache = False
-    model.gradient_checkpointing_enable()
-    batch_size = 2
-    group_size = 16
-    num_epochs = 1
-    max_new_tokens = 32
+    batch_size = 2  # Small batch size for homework
+    group_size = 8  # Number of samples per prompt
+    num_epochs = 5
     learning_rate = 5e-6
+    max_new_tokens = 128
 
     print("Loading tokenizer and model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -359,18 +384,15 @@ def main():
     # Decoder-only models need left padding for correct generation
     tokenizer.padding_side = "left"
 
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        dtype=torch.float16 if device.type in ("mps", "cuda") else torch.float32,
+        torch_dtype=torch.bfloat16,
+        device_map=device,
         trust_remote_code=True,
     )
-    model.to(device)
-    model.config.use_cache = False
-    model.gradient_checkpointing_enable()
 
     print("Loading dataset...")
-    train_dataset = GSM8KDataset(split="train[:200]", tokenizer=tokenizer, max_length=512)
+    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer)  # Use small subset
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -392,20 +414,7 @@ def main():
     )
 
     print("Setting up optimizer...")
-    for p in model.parameters():
-        p.requires_grad_(False)
-
-    for p in model.lm_head.parameters():
-        p.requires_grad_(True)
-
-    N = 4  # set 4 on 16GB, 8 on 24GB+
-    for layer in model.model.layers[-N:]:
-        for p in layer.parameters():
-            p.requires_grad_(True)
-
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable, lr=1e-5)
-
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     print("Starting GRPO training...")
     rewards_list = train_grpo(
