@@ -184,12 +184,11 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
     # ========================================================================
-    adv = advantages.detach().unsqueeze(1)                      # (B,1)
-    logprobs = logprobs.float(); old_logprobs = old_logprobs.float()
-    ratio = torch.exp(logprobs - old_logprobs)                  # (B,T)
-    ratio_clipped = torch.clamp(ratio, 1-clip_eps, 1+clip_eps)
-    obj = torch.min(ratio * adv, ratio_clipped * adv)           # (B,T)
-    loss = -(obj * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+    ratios = torch.exp(logprobs - old_logprobs)
+    adv = advantages.unsqueeze(1)
+    unclipped = ratios * adv
+    clipped = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
+    loss = -(torch.min(unclipped, clipped) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
 
 
 
@@ -338,7 +337,7 @@ def train_grpo(
             with torch.no_grad(): old_logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             loss = compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps)
-            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step()
+            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.lm_head.parameters(), 1.0); optimizer.step()
 
 
             # END TODO 5
@@ -381,7 +380,6 @@ def main():
     group_size = 2  # Number of samples per prompt
     num_epochs = 1
     learning_rate = 5e-6
-    max_new_tokens = 128
 
     print("Loading tokenizer and model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
