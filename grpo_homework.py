@@ -53,7 +53,7 @@ class GSM8KDataset(Dataset):
 
         # ========================================================================
         # TODO 1: Tokenize the prompt
-tok = self.tokenizer(prompt, return_tensors="pt", truncation=True,
+        tok = self.tokenizer(prompt, return_tensors="pt", truncation=True,
                              max_length=self.max_length)
         input_ids, attention_mask = tok["input_ids"], tok["attention_mask"]
 
