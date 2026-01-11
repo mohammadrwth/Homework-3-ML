@@ -205,7 +205,7 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
 # ============================================================================
 
 def generate_completions(model, tokenizer, input_ids, attention_mask,
-                        max_new_tokens=256, temperature=1.0, num_samples=4):
+                        max_new_tokens=32, temperature=1.0, num_samples=4):
     """
     Generate multiple completions for each prompt.
 
@@ -292,7 +292,7 @@ def train_grpo(
     num_epochs=1,
     group_size=2,
     clip_eps=0.2,
-    max_new_tokens=256,
+    max_new_tokens=32,
 ):
     """
     Main GRPO training loop.
