@@ -347,7 +347,7 @@ def main():
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
     batch_size = 2
-    group_size = 4
+    group_size = 16
     num_epochs = 1
     max_new_tokens = 32
     learning_rate = 5e-6
