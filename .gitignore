@@ -25,4 +25,3 @@ grpo_training_curves.png
 *.ckpt
 
 # local data (parquet can be huge)
-gsm8k/main/*.parquet
