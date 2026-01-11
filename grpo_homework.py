@@ -34,6 +34,7 @@ class GSM8KDataset(Dataset):
     def __init__(self, split="train", tokenizer=None, max_length=512):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        # Assuming 'gsm8k' is available via huggingface datasets library
         self.data = load_dataset("gsm8k", "main", split=split)
 
     def __len__(self):
@@ -53,6 +54,8 @@ class GSM8KDataset(Dataset):
 
         # ========================================================================
         # TODO 1: Tokenize the prompt
+        # ========================================================================
+        
         tok = self.tokenizer(prompt, return_tensors="pt", truncation=True,
                              max_length=self.max_length)
         input_ids, attention_mask = tok["input_ids"], tok["attention_mask"]
@@ -141,6 +144,8 @@ def compute_advantages_grpo(rewards, group_size=4):
     """
     # ========================================================================
     # TODO 2: Implement GRPO advantage computation
+    # ========================================================================
+    
     r = rewards.view(-1, group_size)
     advantages = (r - r.mean(dim=1, keepdim=True)).view(-1)
 
@@ -166,6 +171,8 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     """
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
+    # ========================================================================
+    
     ratio = torch.exp(logprobs - old_logprobs)
     adv = advantages[:, None].expand_as(logprobs).detach()
     surr1 = ratio * adv
@@ -184,7 +191,7 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
 # ============================================================================
 
 def generate_completions(model, tokenizer, input_ids, attention_mask,
-                        max_new_tokens = 16, temperature=1.0, num_samples=4):
+                        max_new_tokens=256, temperature=1.0, num_samples=4):
     """
     Generate multiple completions for each prompt.
 
@@ -248,12 +255,13 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     """
     # ========================================================================
     # TODO 4: Compute log probabilities
+    # ========================================================================
+    
     out = model(input_ids=input_ids, attention_mask=attention_mask)
     logp = F.log_softmax(out.logits, dim=-1)
     tgt = input_ids[:, 1:].unsqueeze(-1)
     lp = logp[:, :-1].gather(-1, tgt).squeeze(-1)
     logprobs = torch.cat([lp.new_zeros(lp.size(0), 1), lp], dim=1)
-
 
     # END TODO 4
     # ========================================================================
@@ -270,7 +278,7 @@ def train_grpo(
     num_epochs=1,
     group_size=4,
     clip_eps=0.2,
-    max_new_tokens = 16,
+    max_new_tokens=256,
 ):
     """
     Main GRPO training loop.
@@ -307,6 +315,8 @@ def train_grpo(
 
             # ====================================================================
             # TODO 5: Implement the GRPO training step
+            # ====================================================================
+            
             gen = generate_completions(
                 model, tokenizer, input_ids, attention_mask,
                 max_new_tokens=max_new_tokens, num_samples=group_size
@@ -369,11 +379,11 @@ def main():
     model_path = sys.argv[1]
     print(model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 1  # Small batch size for homework
-    group_size = 2  # Number of samples per prompt
+    batch_size = 2  # Small batch size for homework
+    group_size = 4  # Number of samples per prompt
     num_epochs = 5
-    learning_rate = 2e-6
-    max_new_tokens = 16
+    learning_rate = 5e-6
+    max_new_tokens = 128 # Reset to a reasonable length for math problems
 
     print("Loading tokenizer and model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -390,7 +400,7 @@ def main():
     )
 
     print("Loading dataset...")
-    train_dataset = GSM8KDataset(split="train[:50]", tokenizer=tokenizer, max_length=256)  # Use small subset
+    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer)  # Use small subset
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
