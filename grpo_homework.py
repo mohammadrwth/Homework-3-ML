@@ -60,8 +60,8 @@ class GSM8KDataset(Dataset):
             prompt,
             return_tensors="pt",
             truncation=True,
-            padding="max_length",
             max_length=self.max_length,
+            padding=False,
         )
         input_ids = enc["input_ids"]
         attention_mask = enc["attention_mask"]
@@ -152,9 +152,13 @@ def compute_advantages_grpo(rewards, group_size=4):
     # ========================================================================
     # TODO 2: Implement GRPO advantage computation
     # ========================================================================
+    # TODO 2
     assert rewards.numel() % group_size == 0
     g = rewards.view(-1, group_size)
-    advantages = (g - g.mean(dim=1, keepdim=True)).view(-1)
+    adv = g - g.mean(dim=1, keepdim=True)
+    adv = adv / (adv.std(dim=1, keepdim=True) + 1e-8)
+    advantages = adv.view(-1)
+
 
 
     # END TODO 2
@@ -180,11 +184,12 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
     # ========================================================================
-    ratios = torch.exp((logprobs - old_logprobs).clamp(-20, 20))
-    adv = advantages.unsqueeze(1)
-    surr1 = ratios * adv
-    surr2 = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
-    loss = -(torch.min(surr1, surr2) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+    adv = advantages.detach().unsqueeze(1)                      # (B,1)
+    logprobs = logprobs.float(); old_logprobs = old_logprobs.float()
+    ratio = torch.exp(logprobs - old_logprobs)                  # (B,T)
+    ratio_clipped = torch.clamp(ratio, 1-clip_eps, 1+clip_eps)
+    obj = torch.min(ratio * adv, ratio_clipped * adv)           # (B,T)
+    loss = -(obj * loss_mask).sum() / (loss_mask.sum() + 1e-8)
 
 
 
@@ -266,10 +271,10 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     # TODO 4: Compute log probabilities
     # ========================================================================
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits.float()
-    logp = F.log_softmax(logits, dim=-1)
+    logits = outputs.logits                                      # (B,T,V)
+    logp = F.log_softmax(logits.float(), dim=-1)                 # (B,T,V)
     tok = logp[:, :-1].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
-    logprobs = F.pad(tok, (1, 0), value=0.0)
+    logprobs = F.pad(tok, (1, 0), value=0.0) 
 
 
     # END TODO 4
@@ -325,15 +330,14 @@ def train_grpo(
             # ====================================================================
             # TODO 5: Implement the GRPO training step
             # ====================================================================
-            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, temperature=0.7, num_samples=group_size)
-            output_ids = gen["output_ids"]; full_attn = (output_ids != tokenizer.pad_token_id).long()
+            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, temperature=1.0, num_samples=group_size)
+            output_ids = gen["output_ids"].to(device); full_attn = (output_ids != tokenizer.pad_token_id).long()
             gt = [a for a in answers for _ in range(group_size)]
             rewards = compute_reward(gen["completions"], gt).to(device); advantages = compute_advantages_grpo(rewards, group_size).to(device)
             loss_mask = full_attn.clone(); loss_mask[:, :gen["prompt_length"]] = 0
             with torch.no_grad(): old_logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             loss = compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps)
-            if not torch.isfinite(loss): optimizer.zero_grad(set_to_none=True); continue
             optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step()
 
 
