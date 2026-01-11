@@ -133,7 +133,7 @@ def compute_reward(completions, ground_truth_answers):
 # Part 3: GRPO Algorithm Implementation
 # ============================================================================
 
-def compute_advantages_grpo(rewards, group_size=4):
+def compute_advantages_grpo(rewards, group_size=2):
     """
     Compute advantages using GRPO (Group Relative Policy Optimization).
 
@@ -290,7 +290,7 @@ def train_grpo(
     optimizer,
     device,
     num_epochs=1,
-    group_size=4,
+    group_size=2,
     clip_eps=0.2,
     max_new_tokens=256,
 ):
@@ -378,8 +378,8 @@ def main():
     print(model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 1  # Small batch size for homework
-    group_size = 4  # Number of samples per prompt
-    num_epochs = 3
+    group_size = 2  # Number of samples per prompt
+    num_epochs = 1
     learning_rate = 5e-6
     max_new_tokens = 128
 
