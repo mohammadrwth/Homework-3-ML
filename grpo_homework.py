@@ -51,7 +51,8 @@ class GSM8KDataset(Dataset):
         answer_number = self.extract_answer(answer)
 
         # Format the prompt
-        prompt = f"Question: {question}\nAnswer: Let's solve this step by step.\n"
+        prompt = f"Question: {question}\nAnswer: Let's solve this step by step.\nFinal answer: #### "
+
 
         # ========================================================================
         # TODO 1: Tokenize the prompt
@@ -200,13 +201,15 @@ def generate_completions(model, tokenizer, input_ids, attention_mask,
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
-            num_beams=num_samples,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.95,
+            top_k=50,
             num_return_sequences=num_samples,
-            early_stopping=True,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
+
 
     completions = []
     prompt_len = input_ids.shape[1]
@@ -334,13 +337,17 @@ def main():
         sys.exit(1)
     model_path = sys.argv[1]
     print(model_path)
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available()
-        else "cpu"
-    )
-    batch_size = 1
-    group_size = 2
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        trust_remote_code=True,
+    ).to(device)
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable()
+    batch_size = 2
+    group_size = 4
     num_epochs = 1
     max_new_tokens = 32
     learning_rate = 5e-6
@@ -363,7 +370,7 @@ def main():
     model.gradient_checkpointing_enable()
 
     print("Loading dataset...")
-    train_dataset = GSM8KDataset(split="train[:20]", tokenizer=tokenizer, max_length=256)
+    train_dataset = GSM8KDataset(split="train[:200]", tokenizer=tokenizer, max_length=512)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -387,10 +394,18 @@ def main():
     print("Setting up optimizer...")
     for p in model.parameters():
         p.requires_grad_(False)
+
     for p in model.lm_head.parameters():
         p.requires_grad_(True)
 
-    optimizer = torch.optim.AdamW(model.lm_head.parameters(), lr=learning_rate)
+    N = 4  # set 4 on 16GB, 8 on 24GB+
+    for layer in model.model.layers[-N:]:
+        for p in layer.parameters():
+            p.requires_grad_(True)
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable, lr=1e-5)
+
 
     print("Starting GRPO training...")
     rewards_list = train_grpo(
