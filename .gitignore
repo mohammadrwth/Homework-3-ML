@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# venv
+.venv/
+venv/
+
+# caches
+.cache/
+.ipynb_checkpoints/
+.DS_Store
+
+# Hugging Face / datasets caches (big)
+**/.huggingface/
+**/hf_cache/
+**/datasets/
+**/.cache/huggingface/
+
+# outputs
+saved_model/
+grpo_training_curves.png
+*.pt
+*.ckpt
+
+# local data (parquet can be huge)
+gsm8k/main/*.parquet
