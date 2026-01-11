@@ -358,8 +358,8 @@ def main():
     print(model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 1  # Small batch size for homework
-    group_size = 2  # Number of samples per prompt
-    num_epochs = 3
+    group_size = 1  # Number of samples per prompt
+    num_epochs = 1
     learning_rate = 5e-6
     max_new_tokens = 16
 
