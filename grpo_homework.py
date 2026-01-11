@@ -223,6 +223,7 @@ def generate_completions(model, tokenizer, input_ids, attention_mask,
             temperature=temperature,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
+            use_cache=True, # Important for memory efficiency during generation
         )
 
     # Decode completions
@@ -338,7 +339,7 @@ def train_grpo(
 
             loss = compute_policy_loss(lp, old_lp, advantages, mask, clip_eps=clip_eps)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -379,11 +380,22 @@ def main():
     model_path = sys.argv[1]
     print(model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 2  # Small batch size for homework
-    group_size = 4  # Number of samples per prompt
+    
+    # -----------------------------------------------------
+    # MEMORY OPTIMIZATION SETTINGS
+    # -----------------------------------------------------
+    # Reduced batch size to 1 to minimize memory usage
+    batch_size = 1
+    # Reduced group size to 2 (Minimum viable for GRPO)
+    group_size = 2
+    # Reduced max_length to fit shorter prompts
+    max_length = 256
+    # Reduced max_new_tokens to limit sequence length during generation
+    max_new_tokens = 32
+    
     num_epochs = 5
     learning_rate = 5e-6
-    max_new_tokens = 128 # Reset to a reasonable length for math problems
+    # -----------------------------------------------------
 
     print("Loading tokenizer and model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -398,9 +410,12 @@ def main():
         device_map=device,
         trust_remote_code=True,
     )
+    
+    # Enable gradient checkpointing to save memory (recomputes activations during backward pass)
+    model.gradient_checkpointing_enable()
 
     print("Loading dataset...")
-    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer)  # Use small subset
+    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer, max_length=max_length)  # Use small subset
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
