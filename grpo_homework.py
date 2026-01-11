@@ -372,6 +372,26 @@ def train_grpo(
 # Part 5: Main Function
 # ============================================================================
 
+
+
+The issue is that your model (weights) plus the optimizer states (which are stored to update the model) are taking up more than 16GB, which is the limit of a single T4 GPU.
+*   **Model Weights:** ~3 GB
+*   **Optimizer States:** ~12 GB
+*   **Total:** ~15 GB+ (this leaves no room for the intermediate calculations/activations required for training).
+
+Since you are on **Kaggle T4X2** (which has 2 GPUs), the solution is to use **both GPUs**. By changing the code to `device_map="auto"`, the model will automatically split itself across the two cards, significantly reducing the memory load on each individual GPU.
+
+Here are the necessary changes:
+
+1.  **`device_map="auto"`**: This is the critical change. It enables **Model Parallelism**, splitting the model across your 2 T4 GPUs.
+2.  **`torch.cuda.empty_cache()`**: Added to clear memory between batches.
+
+Here is the updated `main()` function. You only need to replace the `main` function in your previous code with this one:
+
+# ============================================================================
+# Part 5: Main Function
+# ============================================================================
+
 def main():
     # Configuration
     if len(sys.argv) < 2:
@@ -379,19 +399,17 @@ def main():
         sys.exit(1)
     model_path = sys.argv[1]
     print(model_path)
+    
+    # We still define a primary device, but model_map will handle distribution
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # -----------------------------------------------------
     # MEMORY OPTIMIZATION SETTINGS
     # -----------------------------------------------------
-    # Reduced batch size to 1 to minimize memory usage
     batch_size = 1
-    # Reduced group size to 2 (Minimum viable for GRPO)
-    group_size = 2
-    # Reduced max_length to fit shorter prompts
+    group_size = 2  # Minimum group size for GRPO
     max_length = 256
-    # Reduced max_new_tokens to limit sequence length during generation
-    max_new_tokens = 32
+    max_new_tokens = 32 # Short sequences to save memory
     
     num_epochs = 5
     learning_rate = 5e-6
@@ -401,13 +419,15 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # Decoder-only models need left padding for correct generation
     tokenizer.padding_side = "left"
 
+    # CRITICAL CHANGE: device_map="auto"
+    # This splits the model across all available GPUs (T4X2).
+    # This solves the Out of Memory error by distributing the weight and optimizer load.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map=device,
+        device_map="auto", 
         trust_remote_code=True,
     )
     
@@ -415,7 +435,7 @@ def main():
     model.gradient_checkpointing_enable()
 
     print("Loading dataset...")
-    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer, max_length=max_length)  # Use small subset
+    train_dataset = GSM8KDataset(split="train[:100]", tokenizer=tokenizer, max_length=max_length)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -445,7 +465,7 @@ def main():
         tokenizer=tokenizer,
         train_loader=train_loader,
         optimizer=optimizer,
-        device=device,
+        device=device, # Passed for tensor placement, but model handles its own parallelism
         num_epochs=num_epochs,
         group_size=group_size,
         max_new_tokens=max_new_tokens,
@@ -465,14 +485,12 @@ def main():
     import numpy as np
     from scipy.ndimage import uniform_filter1d
     
-    # Smooth the curves using a moving average
     def smooth_curve(data, window_size=10):
         if len(data) < window_size:
             return data
         return uniform_filter1d(data, size=window_size, mode='nearest')
     
     plt.figure(figsize=(12, 5))
-    # Plot rewards
     smoothed_rewards = smooth_curve(rewards_list)
     plt.plot(rewards_list, alpha=0.3, label='Raw')
     plt.plot(smoothed_rewards, label='Smoothed')
@@ -485,6 +503,8 @@ def main():
     plt.savefig('grpo_training_curves.png')
     print(f"Training curves saved to grpo_training_curves.png")
     plt.show()
+
+
 
 
 if __name__ == "__main__":
