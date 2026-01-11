@@ -141,7 +141,7 @@ def compute_advantages_grpo(rewards, group_size=4):
     """
     # ========================================================================
     # TODO 2: Implement GRPO advantage computation
-r = rewards.view(-1, group_size)
+    r = rewards.view(-1, group_size)
     advantages = (r - r.mean(dim=1, keepdim=True)).view(-1)
 
     # END TODO 2
@@ -166,7 +166,7 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     """
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
-ratio = torch.exp(logprobs - old_logprobs)
+    ratio = torch.exp(logprobs - old_logprobs)
     adv = advantages[:, None].expand_as(logprobs).detach()
     surr1 = ratio * adv
     surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv
@@ -248,7 +248,7 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     """
     # ========================================================================
     # TODO 4: Compute log probabilities
-out = model(input_ids=input_ids, attention_mask=attention_mask)
+    out = model(input_ids=input_ids, attention_mask=attention_mask)
     logp = F.log_softmax(out.logits, dim=-1)
     tgt = input_ids[:, 1:].unsqueeze(-1)
     lp = logp[:, :-1].gather(-1, tgt).squeeze(-1)
@@ -307,7 +307,7 @@ def train_grpo(
 
             # ====================================================================
             # TODO 5: Implement the GRPO training step
-gen = generate_completions(
+            gen = generate_completions(
                 model, tokenizer, input_ids, attention_mask,
                 max_new_tokens=max_new_tokens, num_samples=group_size
             )
