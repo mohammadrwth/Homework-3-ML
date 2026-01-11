@@ -34,7 +34,14 @@ class GSM8KDataset(Dataset):
     def __init__(self, split="train", tokenizer=None, max_length=512):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.data = load_dataset("gsm8k", "main", split=split)
+        self.data = load_dataset(
+            "parquet",
+            data_files={
+                "train": "gsm8k/main/train-00000-of-00001.parquet",
+                "test":  "gsm8k/main/test-00000-of-00001.parquet",
+            },
+            split=split,
+        )
 
 
     def __len__(self):
