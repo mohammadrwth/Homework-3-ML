@@ -318,6 +318,8 @@ def train_grpo(
         total_reward = 0.0
         num_batches = 0
 
+
+
         progress_bar = tqdm(train_loader, desc=f"Training")
 
         for batch_idx, batch in enumerate(progress_bar):
@@ -379,6 +381,7 @@ def main():
     batch_size = 1  # Small batch size for homework
     group_size = 2  # Number of samples per prompt
     num_epochs = 1
+    max_new_tokens = 32
     learning_rate = 5e-6
 
     print("Loading tokenizer and model...")
