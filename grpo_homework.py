@@ -34,9 +34,7 @@ class GSM8KDataset(Dataset):
     def __init__(self, split="train", tokenizer=None, max_length=512):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.data = load_dataset("gsm8k", "main", split=split)
-
-
+        self.data = load_dataset("./gsm8k", "main", split=split)
 
     def __len__(self):
         return len(self.data)
@@ -55,16 +53,9 @@ class GSM8KDataset(Dataset):
 
         # ========================================================================
         # TODO 1: Tokenize the prompt
-        # ========================================================================
-        enc = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.max_length,
-            padding=False,
-        )
-        input_ids = enc["input_ids"]
-        attention_mask = enc["attention_mask"]
+        tok = self.tokenizer(prompt, return_tensors="pt", truncation=True,
+                             max_length=self.max_length)
+        input_ids, attention_mask = tok["input_ids"], tok["attention_mask"]
 
 
         # END TODO 1
@@ -133,7 +124,7 @@ def compute_reward(completions, ground_truth_answers):
 # Part 3: GRPO Algorithm Implementation
 # ============================================================================
 
-def compute_advantages_grpo(rewards, group_size=2):
+def compute_advantages_grpo(rewards, group_size=4):
     """
     Compute advantages using GRPO (Group Relative Policy Optimization).
 
@@ -151,14 +142,8 @@ def compute_advantages_grpo(rewards, group_size=2):
     """
     # ========================================================================
     # TODO 2: Implement GRPO advantage computation
-    # ========================================================================
-    # TODO 2
-    assert rewards.numel() % group_size == 0
-    g = rewards.view(-1, group_size)
-    adv = g - g.mean(dim=1, keepdim=True)
-    adv = adv / (adv.std(dim=1, keepdim=True) + 1e-8)
-    advantages = adv.view(-1)
-
+    r = rewards.view(-1, group_size)
+    advantages = (r - r.mean(dim=1, keepdim=True)).view(-1)
 
 
     # END TODO 2
@@ -183,14 +168,12 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     """
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
-    # ========================================================================
-    ratios = torch.exp(logprobs - old_logprobs)
-    adv = advantages.unsqueeze(1)
-    unclipped = ratios * adv
-    clipped = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
-    loss = -(torch.min(unclipped, clipped) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
-
-
+    ratio = torch.exp(logprobs - old_logprobs)
+    adv = advantages[:, None].expand_as(logprobs).detach()
+    surr1 = ratio * adv
+    surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv
+    loss_tok = -torch.min(surr1, surr2) * loss_mask
+    loss = loss_tok.sum() / (loss_mask.sum() + 1e-8)
 
 
     # END TODO 3
@@ -204,7 +187,7 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
 # ============================================================================
 
 def generate_completions(model, tokenizer, input_ids, attention_mask,
-                        max_new_tokens=32, temperature=1.0, num_samples=4):
+                        max_new_tokens=256, temperature=1.0, num_samples=4):
     """
     Generate multiple completions for each prompt.
 
@@ -268,12 +251,12 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     """
     # ========================================================================
     # TODO 4: Compute log probabilities
-    # ========================================================================
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits                                      # (B,T,V)
-    logp = F.log_softmax(logits.float(), dim=-1)                 # (B,T,V)
-    tok = logp[:, :-1].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
-    logprobs = F.pad(tok, (1, 0), value=0.0) 
+    out = model(input_ids=input_ids, attention_mask=attention_mask)
+    logp = F.log_softmax(out.logits, dim=-1)
+    tgt = input_ids[:, 1:].unsqueeze(-1)
+    lp = logp[:, :-1].gather(-1, tgt).squeeze(-1)
+    logprobs = torch.cat([lp.new_zeros(lp.size(0), 1), lp], dim=1)
+
 
 
     # END TODO 4
@@ -289,9 +272,9 @@ def train_grpo(
     optimizer,
     device,
     num_epochs=1,
-    group_size=2,
+    group_size=4,
     clip_eps=0.2,
-    max_new_tokens=32,
+    max_new_tokens=256,
 ):
     """
     Main GRPO training loop.
@@ -318,8 +301,6 @@ def train_grpo(
         total_reward = 0.0
         num_batches = 0
 
-
-
         progress_bar = tqdm(train_loader, desc=f"Training")
 
         for batch_idx, batch in enumerate(progress_bar):
@@ -330,16 +311,14 @@ def train_grpo(
 
             # ====================================================================
             # TODO 5: Implement the GRPO training step
-            # ====================================================================
-            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, temperature=1.0, num_samples=group_size)
-            output_ids = gen["output_ids"].to(device); full_attn = (output_ids != tokenizer.pad_token_id).long()
-            gt = [a for a in answers for _ in range(group_size)]
-            rewards = compute_reward(gen["completions"], gt).to(device); advantages = compute_advantages_grpo(rewards, group_size).to(device)
-            loss_mask = full_attn.clone(); loss_mask[:, :gen["prompt_length"]] = 0
-            with torch.no_grad(): old_logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
-            logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
-            loss = compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps)
-            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.lm_head.parameters(), 1.0); optimizer.step()
+            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, num_samples=group_size)
+            rewards = compute_reward(gen["completions"], np.repeat(answers, group_size)).to(device); advantages = compute_advantages_grpo(rewards, group_size).to(device)
+            seq = gen["output_ids"].to(device); am = (seq != tokenizer.pad_token_id).long()
+            with torch.no_grad(): old_lp = compute_logprobs_from_model(model, seq, am).detach()
+            model.train(); lp = compute_logprobs_from_model(model, seq, am)
+            mask = am.clone(); mask[:, :gen["prompt_length"]] = 0
+            loss = compute_policy_loss(lp, old_lp, advantages, mask, clip_eps=clip_eps)
+            optimizer.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step()
 
 
             # END TODO 5
@@ -380,9 +359,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 1  # Small batch size for homework
     group_size = 2  # Number of samples per prompt
-    num_epochs = 1
-    max_new_tokens = 32
+    num_epochs = 3
     learning_rate = 5e-6
+    max_new_tokens = 16
 
     print("Loading tokenizer and model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
