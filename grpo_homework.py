@@ -175,11 +175,13 @@ def compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps=
     # ========================================================================
     # TODO 3: Implement PPO-style policy loss
     # ========================================================================
-    ratios = torch.exp(logprobs - old_logprobs)
+    diff = (logprobs - old_logprobs).clamp(-20, 20)
+    ratios = torch.exp(diff)
     adv = advantages.unsqueeze(1)
     unclipped = ratios * adv
     clipped = torch.clamp(ratios, 1 - clip_eps, 1 + clip_eps) * adv
     loss = -(torch.min(unclipped, clipped) * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+
     # END TODO 3
     # ========================================================================
 
@@ -228,10 +230,11 @@ def compute_logprobs_from_model(model, input_ids, attention_mask):
     # TODO 4: Compute log probabilities
     # ========================================================================
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits
+    logits = outputs.logits.float()
     logp = F.log_softmax(logits, dim=-1)
-    tok_logp = logp[:, :-1].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
-    logprobs = torch.cat([torch.zeros(input_ids.size(0), 1, device=input_ids.device), tok_logp], dim=1)
+    tok = logp[:, :-1].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+    logprobs = F.pad(tok, (1, 0), value=0.0)
+
     # END TODO 4
     # ========================================================================
 
@@ -285,21 +288,17 @@ def train_grpo(
             # ====================================================================
             # TODO 5: Implement the GRPO training step
             # ====================================================================
-            gen = generate_completions(model, tokenizer, input_ids, attention_mask,max_new_tokens=max_new_tokens, num_samples=group_size)
+            gen = generate_completions(model, tokenizer, input_ids, attention_mask, max_new_tokens=max_new_tokens, num_samples=group_size)
             output_ids = gen["output_ids"]; full_attn = (output_ids != tokenizer.pad_token_id).long()
-            gt = [ans for ans in answers for _ in range(group_size)]
-            rewards = compute_reward(gen["completions"], gt).to(device)
-            advantages = compute_advantages_grpo(rewards, group_size).to(device)
+            gt = [a for a in answers for _ in range(group_size)]
+            rewards = compute_reward(gen["completions"], gt).to(device); advantages = compute_advantages_grpo(rewards, group_size).to(device)
             loss_mask = full_attn.clone(); loss_mask[:, :gen["prompt_length"]] = 0
             with torch.no_grad(): old_logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             model.train(); logprobs = compute_logprobs_from_model(model, output_ids, full_attn)
             loss = compute_policy_loss(logprobs, old_logprobs, advantages, loss_mask, clip_eps)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-            optimizer.step()
-            if device.type == "mps":
-                torch.mps.empty_cache()
+            if not torch.isfinite(loss): optimizer.zero_grad(set_to_none=True); continue
+            optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]["params"], 1.0); optimizer.step()
+
             # END TODO 5
             # ====================================================================
 
